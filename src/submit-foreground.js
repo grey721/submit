@@ -83,7 +83,6 @@ function parseCliArgs(argv) {
     fetchCaptcha: false,
     captchaOutput: '',
     checkLogin: false,
-    interactiveCaptcha: false,
     onceCaptcha: '',
     scriptArgs: [],
   };
@@ -91,7 +90,7 @@ function parseCliArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--') {
-      throw new Error('不再支持使用 -- 分隔符。请直接写: submit <file> --epochs 20');
+      throw new Error('The -- separator is not supported. Use: submit <file> --epochs 20');
     }
 
     if (arg === '--single-file') { out.singleFile = argv[index + 1] || ''; index += 1; continue; }
@@ -107,8 +106,6 @@ function parseCliArgs(argv) {
 
     if (arg === '--fetch-captcha') { out.fetchCaptcha = true; continue; }
     if (arg === '--check-login') { out.checkLogin = true; continue; }
-    if (arg === '--interactive-captcha') { out.interactiveCaptcha = true; continue; }
-
     if (arg === '--once-captcha') { out.onceCaptcha = argv[index + 1] || ''; index += 1; continue; }
     if (arg.startsWith('--once-captcha=')) { out.onceCaptcha = arg.slice('--once-captcha='.length); continue; }
 
@@ -117,20 +114,20 @@ function parseCliArgs(argv) {
 
     if (arg === '--script-args-json') {
       const parsed = safeJsonParse(argv[index + 1] || '[]', []);
-      if (!Array.isArray(parsed)) throw new Error('--script-args-json 需要是 JSON 数组。');
+      if (!Array.isArray(parsed)) throw new Error('--script-args-json must be a JSON array.');
       out.scriptArgs = parsed.map((item) => String(item));
       index += 1;
       continue;
     }
     if (arg.startsWith('--script-args-json=')) {
       const parsed = safeJsonParse(arg.slice('--script-args-json='.length), []);
-      if (!Array.isArray(parsed)) throw new Error('--script-args-json 需要是 JSON 数组。');
+      if (!Array.isArray(parsed)) throw new Error('--script-args-json must be a JSON array.');
       out.scriptArgs = parsed.map((item) => String(item));
       continue;
     }
 
     if (arg.startsWith('--')) {
-      throw new Error(`不支持参数: ${arg}`);
+      throw new Error(`Unsupported argument: ${arg}`);
     }
 
     if (!out.singleFile) {
@@ -230,7 +227,7 @@ function resolveCredentials(configCredentials = {}, overrides = {}, { required =
   }
 
   if (required && (!credentials.account || !credentials.password)) {
-    throw new Error('缺少账号或密码。请运行 submit login --account <账号> --password <密码>。');
+    throw new Error('Missing account or password. Run: submit login --account <account> --password <password>.');
   }
 
   return credentials;
@@ -366,12 +363,12 @@ function extractImageArray(payload) {
 
 function selectImageOption(options, selector) {
   const text = String(selector || '').trim();
-  if (!text) throw new Error('镜像选择为空。请传入序号、id 或关键词。');
+  if (!text) throw new Error('Image selector is empty. Use an index, id, or keyword.');
 
   if (/^\d+$/.test(text)) {
     const index = Number(text) - 1;
     if (index >= 0 && index < options.length) return options[index];
-    throw new Error(`镜像序号超出范围: ${text}（可选范围 1-${options.length}）`);
+    throw new Error(`Image index out of range: ${text} (valid range: 1-${options.length})`);
   }
 
   const exactById = options.find((item) => item.id === text);
@@ -387,7 +384,7 @@ function selectImageOption(options, selector) {
     item.type.toLowerCase().includes(lowered),
   );
 
-  if (!matches.length) throw new Error(`未匹配到镜像: ${text}`);
+  if (!matches.length) throw new Error(`No image matched: ${text}`);
   if (matches.length === 1) return matches[0];
 
   const hint = matches
@@ -395,7 +392,7 @@ function selectImageOption(options, selector) {
     .map((item, index) => `${index + 1}. ${item.display}${item.id ? ` | id=${item.id}` : ''}`)
     .join('\n');
 
-  throw new Error(`镜像关键词命中多个结果，请改用序号或更精确关键词:\n${hint}`);
+  throw new Error(`Image keyword matched multiple results. Use an index or a more specific keyword:\n${hint}`);
 }
 
 function normalizeTaskIdentity(task) {
@@ -493,6 +490,104 @@ function writeIncidentReport(settings, taskIdentity, reason) {
   return reportPath;
 }
 
+function normalizeNodeName(raw) {
+  return String(raw || '').trim();
+}
+
+function extractObservedNode(taskSummary) {
+  if (!taskSummary || typeof taskSummary !== 'object') return '';
+  return firstNonEmpty([taskSummary.nodeName, taskSummary.chosenNodeName]);
+}
+
+function isNoSpaceImagePullFailure(statusReason) {
+  const text = String(statusReason || '').toLowerCase();
+  if (!text) return false;
+  return text.includes('no space left on device')
+    || (text.includes('failed to register layer') && text.includes('error processing tar file'));
+}
+
+function safeNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function summarizeNodeRecord(item) {
+  if (!item || typeof item !== 'object') return null;
+  const dockerMountInfo = item.dockerMountInfo && typeof item.dockerMountInfo === 'object'
+    ? item.dockerMountInfo
+    : {};
+  return {
+    nodeName: normalizeNodeName(item.nodeName),
+    groupName: String(item.groupName || '').trim(),
+    nodeStatus: String(item.nodeStatus || '').trim(),
+    nodeResourceStatus: String(item.nodeResourceStatus || '').trim(),
+    cpuTotal: safeNumber(item.cpu),
+    cpuUsed: safeNumber(item.cpuUsage),
+    gpuTotal: safeNumber(item.acceleratorCard),
+    gpuUsed: safeNumber(item.acceleratorCardUsage),
+    diskTotal: safeNumber(item.disk),
+    rootUsage: String(dockerMountInfo.usage || '').trim(),
+    rootAvailable: safeNumber(dockerMountInfo.available),
+    rootUsagePercent: safeNumber(String(dockerMountInfo.usage || '').replace('%', ''), 0),
+  };
+}
+
+function sortEligibleNodeRecords(nodeRecords) {
+  return [...nodeRecords].sort((left, right) => {
+    if (left.rootAvailable !== right.rootAvailable) return right.rootAvailable - left.rootAvailable;
+    if (left.rootUsagePercent !== right.rootUsagePercent) return left.rootUsagePercent - right.rootUsagePercent;
+    if (left.gpuUsed !== right.gpuUsed) return left.gpuUsed - right.gpuUsed;
+    if (left.cpuUsed !== right.cpuUsed) return left.cpuUsed - right.cpuUsed;
+    return String(left.nodeName || '').localeCompare(String(right.nodeName || ''));
+  });
+}
+
+function nodeHasCapacity(nodeInfo, requiredCpu, requiredGpu) {
+  if (!nodeInfo) return false;
+  const freeCpu = safeNumber(nodeInfo.cpuTotal) - safeNumber(nodeInfo.cpuUsed);
+  const freeGpu = safeNumber(nodeInfo.gpuTotal) - safeNumber(nodeInfo.gpuUsed);
+  return freeCpu >= requiredCpu && freeGpu >= requiredGpu;
+}
+
+function isEligibleNode(nodeInfo, requiredCpu, requiredGpu) {
+  if (!nodeInfo) return false;
+  if (String(nodeInfo.nodeStatus || '').toLowerCase() !== 'ready') return false;
+  if (String(nodeInfo.nodeResourceStatus || '').toLowerCase() !== 'healthy') return false;
+  if (!nodeHasCapacity(nodeInfo, requiredCpu, requiredGpu)) return false;
+  return nodeInfo.rootAvailable > 0;
+}
+
+function chooseBestNode(nodeRecords = [], requiredCpu, requiredGpu) {
+  const eligible = nodeRecords.filter((item) => isEligibleNode(item, requiredCpu, requiredGpu));
+  const ranked = sortEligibleNodeRecords(eligible);
+  return ranked.length ? ranked[0].nodeName : '';
+}
+
+function formatGiBFromKiB(valueKiB) {
+  const gib = safeNumber(valueKiB) / (1024 * 1024);
+  return `${gib.toFixed(1)}G`;
+}
+
+function findNodeInfo(nodeRecords, nodeName) {
+  const target = normalizeNodeName(nodeName);
+  if (!target) return null;
+  return nodeRecords.find((item) => item.nodeName === target) || null;
+}
+
+function formatNodeInfoBrief(nodeInfo) {
+  if (!nodeInfo) return 'node=-';
+  const rootAvailPercent = Number.isFinite(nodeInfo.rootUsagePercent)
+    ? Math.max(0, 100 - nodeInfo.rootUsagePercent)
+    : null;
+  return [
+    `CPU: ${nodeInfo.cpuUsed}/${nodeInfo.cpuTotal}`,
+    `GPU: ${nodeInfo.gpuUsed}/${nodeInfo.gpuTotal}`,
+    Number.isFinite(nodeInfo.rootAvailable)
+      ? `RootAvail: ${formatGiBFromKiB(nodeInfo.rootAvailable)}${rootAvailPercent === null ? '' : ` (${rootAvailPercent}%)`}`
+      : '',
+  ].filter(Boolean).join(', ');
+}
+
 function resolveRuntimeWorkDir() {
   return process.cwd();
 }
@@ -508,14 +603,14 @@ function resolveInterpreterForFile(filePath, settings) {
 
 function prepareSingleFileLauncher(singleFile, runtimeWorkDir, settings, cliScriptArgs = []) {
   const trimmed = String(singleFile || '').trim();
-  if (!trimmed) throw new Error('单文件模式缺少文件路径。');
+  if (!trimmed) throw new Error('Single-file mode requires a file path.');
 
   const absoluteFile = path.isAbsolute(trimmed) ? trimmed : path.resolve(process.cwd(), trimmed);
-  if (!fs.existsSync(absoluteFile)) throw new Error(`本地未找到文件: ${absoluteFile}`);
+  if (!fs.existsSync(absoluteFile)) throw new Error(`Local file not found: ${absoluteFile}`);
 
   const { ext, interpreter } = resolveInterpreterForFile(absoluteFile, settings);
   if (!interpreter) {
-    throw new Error(`文件后缀 ${ext || '(空)'} 未配置解释器，请检查 settings.singleFile.interpreters。`);
+    throw new Error(`No interpreter configured for file extension ${ext || '(empty)'}. Check settings.singleFile.interpreters.`);
   }
 
   const launcherDir = path.resolve(runtimeWorkDir, String(settings.singleFile.launcherDir || '.autosubmit/launchers'));
@@ -560,9 +655,10 @@ function cleanupLauncherIfNeeded(launcherPath, settings) {
   }
 }
 
-function buildSubmitPayload({ boundImage, taskName, cpuCores, acceleratorCount, launcherPath }) {
+function buildSubmitPayload({ boundImage, imageType, taskName, cpuCores, acceleratorCount, launcherPath, nodeName }) {
   const acceleratorCardKind = acceleratorCount > 0 ? 'GPU' : 'CPU';
   const acceleratorCardType = acceleratorCount > 0 ? SUBMIT_PROFILE.gpuCardType : null;
+  const normalizedImageType = String(imageType || SUBMIT_PROFILE.imageType).trim() || SUBMIT_PROFILE.imageType;
   const workerConfig = {
     worker: {
       nodeNum: 1,
@@ -577,7 +673,7 @@ function buildSubmitPayload({ boundImage, taskName, cpuCores, acceleratorCount, 
     name: taskName,
     description: '',
     projectId: SUBMIT_PROFILE.projectId,
-    imageType: SUBMIT_PROFILE.imageType,
+    imageType: normalizedImageType,
     resGroupId: SUBMIT_PROFILE.resGroupId,
     acceleratorCardType,
     image: boundImage,
@@ -588,9 +684,9 @@ function buildSubmitPayload({ boundImage, taskName, cpuCores, acceleratorCount, 
     enUpdateDataSet: SUBMIT_PROFILE.enUpdateDataSet,
     param: null,
     execDir: '',
-    nodeName: '',
+    nodeName: String(nodeName || '').trim(),
     mpiFlag: SUBMIT_PROFILE.mpiFlag,
-    type: SUBMIT_PROFILE.type,
+    type: normalizedImageType,
     shmSize: SUBMIT_PROFILE.shmSize,
     datasetId: null,
     emergencyFlag: SUBMIT_PROFILE.emergencyFlag,
@@ -601,7 +697,7 @@ function buildSubmitPayload({ boundImage, taskName, cpuCores, acceleratorCount, 
     models: [],
     config: JSON.stringify(workerConfig),
     command: `bash ${shellQuote(launcherPath)}`,
-    commandScriptList: [launcherPath],
+    commandScriptList: [],
     jobVolume: [],
   };
 }
@@ -638,6 +734,24 @@ function summarizeSubmitPayload(payload) {
     acceleratorCardKind: payload.acceleratorCardKind,
     command: payload.command,
     worker: workerConfig && workerConfig.worker ? workerConfig.worker : {},
+  };
+}
+
+function summarizeTaskRecord(task, source) {
+  if (!task || typeof task !== 'object') return null;
+  return {
+    source,
+    id: firstNonEmpty([task.id, task.jobId, task.taskId]),
+    name: firstNonEmpty([task.name, task.taskName]),
+    status: firstNonEmpty([task.status]),
+    statusReason: firstNonEmpty([task.statusReason, task.reason]),
+    nodeName: firstNonEmpty([task.nodeName]),
+    chosenNodeName: firstNonEmpty([task.choosedNodeName, task.chosenNodeName]),
+    imageType: firstNonEmpty([task.imageType, task.jobType]),
+    type: firstNonEmpty([task.type]),
+    command: firstNonEmpty([task.command]),
+    createTime: Number(task.createTime || 0),
+    updateTime: Number(task.updateTime || 0),
   };
 }
 
@@ -709,12 +823,17 @@ function renderIncrementalLog(nextText, state) {
 
 function isSuccessTerminalStatus(status) {
   const text = String(status || '').toLowerCase();
-  return ['success', 'succeeded', 'completed', 'finished', 'done', '成功', '完成'].some((item) => text.includes(item));
+  return ['success', 'succeeded', 'completed', 'done', '成功', '完成'].some((item) => text.includes(item));
 }
 
 function isFailedTerminalStatus(status) {
   const text = String(status || '').toLowerCase();
   return ['fail', 'failed', 'error', 'exception', 'cancel', 'stopped', '失败', '终止', '取消'].some((item) => text.includes(item));
+}
+
+function isAmbiguousTerminalStatus(status) {
+  const text = String(status || '').toLowerCase();
+  return ['finished', 'finish'].some((item) => text.includes(item));
 }
 
 function isCaptchaError(error) {
@@ -739,11 +858,11 @@ async function fetchPublicKey(context) {
   });
 
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`获取公钥失败 HTTP ${response.status}`);
+    throw new Error(`Failed to fetch public key: HTTP ${response.status}`);
   }
 
   const publicKey = response.data && response.data.resData;
-  if (!publicKey) throw new Error('未获取到公钥，无法登录。');
+  if (!publicKey) throw new Error('Public key was not returned. Cannot log in.');
   return publicKey;
 }
 
@@ -768,16 +887,16 @@ async function loginAndBuildSession(context, credentials) {
   });
 
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`登录失败 HTTP ${response.status}`);
+    throw new Error(`Login failed: HTTP ${response.status}`);
   }
 
   if (!response.data || response.data.flag !== true) {
     const message = extractPlatformMessage(response.data);
-    throw new Error(message ? `登录失败: ${message}` : `登录失败: ${JSON.stringify(response.data)}`);
+    throw new Error(message ? `Login failed: ${message}` : `Login failed: ${JSON.stringify(response.data)}`);
   }
 
   const tokenValue = String(((response.data || {}).resData || {}).token || '').trim();
-  if (!tokenValue) throw new Error('登录成功但未拿到 token。');
+  if (!tokenValue) throw new Error('Login succeeded but no token was returned.');
 
   context.tokenValue = tokenValue;
   return response.data;
@@ -790,15 +909,66 @@ async function fetchActiveTasks(context) {
   });
 
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`拉取任务列表失败 HTTP ${response.status}`);
+    throw new Error(`Failed to fetch task list: HTTP ${response.status}`);
   }
 
   const tasks = response.data && response.data.resData && response.data.resData.data;
   if (!Array.isArray(tasks)) {
-    throw new Error('任务列表返回结构异常（resData.data 不是数组）。');
+    throw new Error('Unexpected task list response shape: resData.data is not an array.');
   }
 
   return tasks;
+}
+
+async function fetchTasksByStatusFlag(context, statusFlag, extraParams = {}) {
+  const response = await requestWithSession(context.client, context.cookieJar, {
+    method: 'GET',
+    url: '/api/iresource/v1/train',
+    headers: authedHeaders(context),
+    params: {
+      page: 1,
+      pageSize: 50,
+      taskType: '',
+      statusFlag,
+      ...extraParams,
+    },
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Failed to fetch task list: HTTP ${response.status}`);
+  }
+
+  const tasks = response.data && response.data.resData && response.data.resData.data;
+  if (!Array.isArray(tasks)) {
+    throw new Error('Unexpected task list response shape: resData.data is not an array.');
+  }
+
+  return tasks;
+}
+
+async function fetchNodeRecords(context, groupId) {
+  const response = await requestWithSession(context.client, context.cookieJar, {
+    method: 'GET',
+    url: '/api/iresource/v1/node',
+    headers: authedHeaders(context),
+    params: {
+      page: 1,
+      pageSize: 999,
+      getUsage: 1,
+      groupId,
+    },
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Failed to fetch node list: HTTP ${response.status}`);
+  }
+
+  const tasks = response.data && response.data.resData && response.data.resData.data;
+  if (!Array.isArray(tasks)) {
+    throw new Error('Unexpected node list response shape: resData.data is not an array.');
+  }
+
+  return tasks.map(summarizeNodeRecord).filter(Boolean);
 }
 
 async function fetchImageOptions(context) {
@@ -809,7 +979,7 @@ async function fetchImageOptions(context) {
   });
 
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`拉取镜像列表失败 HTTP ${response.status}`);
+    throw new Error(`Failed to fetch image list: HTTP ${response.status}`);
   }
 
   const options = dedupeImageOptions(
@@ -819,6 +989,42 @@ async function fetchImageOptions(context) {
   return {
     options,
     source: 'GET /api/iresource/v1/images/all',
+  };
+}
+
+function inferImageTypeFromImageRef(imageRef) {
+  const text = String(imageRef || '').trim().toLowerCase();
+  if (!text) return '';
+  if (text.includes('/pytorch/')) return 'pytorch';
+  if (text.includes('/tensorflow/')) return 'tensorflow';
+  if (text.includes('/other/')) return 'other';
+  return '';
+}
+
+async function resolveBoundImageSpec(context, boundImage) {
+  const exact = String(boundImage || '').trim();
+  if (!exact) {
+    return { image: '', imageType: SUBMIT_PROFILE.imageType, inferred: false };
+  }
+
+  try {
+    const result = await fetchImageOptions(context);
+    const match = result.options.find((item) => item.display === exact);
+    if (match && match.type) {
+      return {
+        image: exact,
+        imageType: match.type,
+        inferred: false,
+      };
+    }
+  } catch {
+    // Fall back to image-ref inference if image lookup is unavailable.
+  }
+
+  return {
+    image: exact,
+    imageType: inferImageTypeFromImageRef(exact) || SUBMIT_PROFILE.imageType,
+    inferred: true,
   };
 }
 
@@ -883,18 +1089,20 @@ async function checkResources(context, payload) {
   });
 
   if (response.status < 200 || response.status >= 300) {
-    throw new Error(`资源检查失败 HTTP ${response.status}`);
+    throw new Error(`Resource check failed: HTTP ${response.status}`);
   }
 
   if (!response.data || response.data.flag !== true) {
     const message = extractPlatformMessage(response.data);
-    throw new Error(message ? `资源检查失败: ${message}` : `资源检查失败: ${JSON.stringify(response.data)}`);
+    throw new Error(message ? `Resource check failed: ${message}` : `Resource check failed: ${JSON.stringify(response.data)}`);
   }
 
   const checkResult = response.data.resData || {};
   if (checkResult.flag === false) {
-    throw new Error(`资源检查失败: ${String(checkResult.reason || '平台返回资源不足').trim()}`);
+    throw new Error(`Resource check failed: ${String(checkResult.reason || 'platform reported insufficient resources').trim()}`);
   }
+
+  return response.data;
 }
 
 async function submitTask(context, payload) {
@@ -915,6 +1123,35 @@ async function submitTask(context, payload) {
   }
 
   return response.data;
+}
+
+async function fetchTaskSummary(context, taskIdentity) {
+  if (!taskIdentity || (!taskIdentity.id && !taskIdentity.name)) return null;
+
+  try {
+    const activeTasks = await fetchTasksByStatusFlag(context, 0);
+    const activeMatch = activeTasks.find((item) =>
+      (taskIdentity.id && String(item.id || item.jobId || item.taskId || '').trim() === taskIdentity.id) ||
+      (taskIdentity.name && String(item.name || item.taskName || '').trim() === taskIdentity.name),
+    );
+    if (activeMatch) return summarizeTaskRecord(activeMatch, 'active');
+  } catch {
+    // ignore transient active-list failures during foreground polling
+  }
+
+  if (!taskIdentity.id) return null;
+
+  try {
+    const historyTasks = await fetchTasksByStatusFlag(context, 3, { id: taskIdentity.id });
+    const historyMatch = historyTasks.find((item) =>
+      String(item.id || item.jobId || item.taskId || '').trim() === taskIdentity.id,
+    );
+    if (historyMatch) return summarizeTaskRecord(historyMatch, 'history');
+  } catch {
+    // ignore transient history-list failures during foreground polling
+  }
+
+  return null;
 }
 
 async function deleteTask(context, taskId) {
@@ -1079,6 +1316,7 @@ async function locateTaskIdentity(context, identity, beforeIds, submittedAt, sta
 
 async function monitorTaskForeground(context, taskIdentity, pollIntervalMs, runtimeState) {
   const logState = { lastText: '' };
+  let pullingPrinted = false;
 
   while (!runtimeState.interrupted) {
     if (!taskIdentity.id && taskIdentity.name) {
@@ -1088,20 +1326,79 @@ async function monitorTaskForeground(context, taskIdentity, pollIntervalMs, runt
     const result = await fetchStatusAndLogs(context, taskIdentity.id, logState);
     if (result.logDelta) process.stdout.write(result.logDelta);
 
-    if (result.status && (isSuccessTerminalStatus(result.status) || isFailedTerminalStatus(result.status))) {
+    if (!pullingPrinted) {
+      const taskSummary = await fetchTaskSummary(context, taskIdentity);
+      if (taskSummary) {
+        if (String(taskSummary.status || '').toLowerCase() === 'imagepulling') {
+          const observedNode = extractObservedNode(taskSummary);
+          const nodeInfo = findNodeInfo(runtimeState.nodeRecords || [], observedNode);
+          console.log([
+            'ImagePulling',
+            `Node: ${observedNode || '-'}`,
+            nodeInfo ? formatNodeInfoBrief(nodeInfo) : '',
+          ].filter(Boolean).join(', '));
+          pullingPrinted = true;
+        }
+      }
+    }
+
+    if (result.status && (isSuccessTerminalStatus(result.status) || isFailedTerminalStatus(result.status) || isAmbiguousTerminalStatus(result.status))) {
       await waitShort(pollIntervalMs);
 
       const finalResult = await fetchStatusAndLogs(context, taskIdentity.id, logState);
       if (finalResult.logDelta) process.stdout.write(finalResult.logDelta);
+      const finalTaskSummary = await fetchTaskSummary(context, taskIdentity);
 
       runtimeState.taskFinalized = true;
-      if (isSuccessTerminalStatus(result.status)) {
+      const resolvedStatus = finalTaskSummary && finalTaskSummary.status
+        ? String(finalTaskSummary.status)
+        : String(finalResult.status || result.status || '');
+      const outcome = {
+        success: isSuccessTerminalStatus(resolvedStatus),
+        failed: isFailedTerminalStatus(resolvedStatus),
+        ambiguous: !isSuccessTerminalStatus(resolvedStatus) && !isFailedTerminalStatus(resolvedStatus),
+        status: String(result.status || ''),
+        finalStatus: String(finalResult.status || ''),
+        resolvedStatus,
+        finalTaskSummary,
+        retryableImagePullFailure: Boolean(
+          isFailedTerminalStatus(resolvedStatus)
+          && finalTaskSummary
+          && isNoSpaceImagePullFailure(finalTaskSummary.statusReason),
+        ),
+      };
+
+      if (outcome.success) {
+        console.log('Submit succeeded');
+        console.log(`Task completed: status=${resolvedStatus}`);
+      } else if (outcome.retryableImagePullFailure) {
+        process.exitCode = 0;
+      } else if (outcome.failed) {
+        console.error(`\nTask finished with non-success status: ${resolvedStatus}`);
+        if (finalTaskSummary && String(finalTaskSummary.statusReason || '').trim()) {
+          console.error(`Status reason: ${String(finalTaskSummary.statusReason).trim()}`);
+        }
+        process.exitCode = 1;
+      } else if (isSuccessTerminalStatus(result.status)) {
         console.log(`\nTask finished with status: ${result.status}`);
-      } else {
+      } else if (isFailedTerminalStatus(result.status)) {
         console.error(`\nTask finished with non-success status: ${result.status}`);
+        if (finalTaskSummary && String(finalTaskSummary.statusReason || '').trim()) {
+          console.error(`Status reason: ${String(finalTaskSummary.statusReason).trim()}`);
+        }
+        process.exitCode = 1;
+      } else {
+        console.error(`\nTask reached ambiguous terminal status: ${result.status}`);
+        if (finalTaskSummary && String(finalTaskSummary.status || '').trim()) {
+          console.error(`Final task summary status: ${String(finalTaskSummary.status).trim()}`);
+        }
+        if (finalTaskSummary && String(finalTaskSummary.statusReason || '').trim()) {
+          console.error(`Status reason: ${String(finalTaskSummary.statusReason).trim()}`);
+        }
+        console.error('Result is not verified as success. Check the web UI before trusting this run.');
         process.exitCode = 1;
       }
-      return;
+      return outcome;
     }
 
     await waitShort(pollIntervalMs);
@@ -1114,12 +1411,12 @@ async function main() {
   const cli = parseCliArgs(process.argv.slice(2));
 
   if (!String(config.baseURL || '').trim()) {
-    throw new Error('配置缺少 baseURL。请编辑 ~/.autosubmit/config.json。');
+    throw new Error('Missing baseURL in ~/.autosubmit/config.json.');
   }
 
   const pollIntervalSec = Number(settings.foreground.pollIntervalSec);
   if (!Number.isFinite(pollIntervalSec) || pollIntervalSec <= 0) {
-    throw new Error('settings.foreground.pollIntervalSec 必须是大于 0 的秒数。');
+    throw new Error('settings.foreground.pollIntervalSec must be greater than 0.');
   }
 
   const cpuCores = Number(settings.submitDefaults.cpuCores);
@@ -1178,6 +1475,7 @@ async function main() {
 
   const runtimeState = {
     preparedSingleFile: null,
+    nodeRecords: [],
     interrupted: false,
     interruptRunning: false,
     controlInProgress: false,
@@ -1203,7 +1501,7 @@ async function main() {
     runtimeState.interruptRunning = true;
     runtimeState.interrupted = true;
     runtimeState.controlInProgress = true;
-    process.stderr.write('\nInterrupted, deleting remote task...\n');
+    process.stderr.write('\nInterrupted. Deleting remote task...\n');
 
     try {
       await resolveTaskIdByNameIfNeeded(context, runtimeState.taskIdentity);
@@ -1211,12 +1509,12 @@ async function main() {
 
       const result = await deleteTask(context, runtimeState.taskIdentity.id);
       if (result.ok) {
-        process.stderr.write('Task deleted.\n');
+        process.stderr.write('Remote task deleted.\n');
       } else {
-        process.stderr.write('Task deletion failed.\n');
+        process.stderr.write('Remote task deletion failed.\n');
       }
     } catch (error) {
-      process.stderr.write(`Task deletion failed: ${error.message}\n`);
+      process.stderr.write(`Remote task deletion failed: ${error.message}\n`);
     } finally {
       if (runtimeState.preparedSingleFile) {
         cleanupLauncherIfNeeded(runtimeState.preparedSingleFile.launcherPath, settings);
@@ -1234,7 +1532,7 @@ async function main() {
     runtimeState.interrupted = true;
     const reportPath = emitIncidentReport(`signal_${String(signal).toLowerCase()}`);
     if (reportPath) {
-      process.stderr.write(`\nUnexpected signal ${signal}, incident report generated: ${reportPath}\n`);
+      process.stderr.write(`\nUnexpected signal ${signal}. Incident report written: ${reportPath}\n`);
       process.stderr.write(`Reconnect command: ${buildReconnectCommand(settings, runtimeState.taskIdentity)}\n`);
     }
 
@@ -1299,10 +1597,10 @@ async function main() {
     if (cli.checkLogin) {
       try {
         await ensureAuthenticated();
-        console.log('Login success.');
+        console.log('Login succeeded.');
         return;
       } catch (firstError) {
-        if (!cli.interactiveCaptcha || !isCaptchaError(firstError)) throw firstError;
+        if (!isCaptchaError(firstError)) throw firstError;
 
         let lastError = firstError;
         for (let attempt = 1; attempt <= 3; attempt += 1) {
@@ -1336,12 +1634,12 @@ async function main() {
 
           try {
             await ensureAuthenticated();
-            console.log('Login success.');
+            console.log('Login succeeded.');
             return;
           } catch (retryError) {
             lastError = retryError;
             if (!isCaptchaError(retryError)) throw retryError;
-            console.log(`Captcha check failed (attempt ${attempt}).`);
+            console.log(`Captcha verification failed (attempt ${attempt}).`);
           }
         }
 
@@ -1352,7 +1650,7 @@ async function main() {
     if (cli.reconnectTarget) {
       const parsedTarget = resolveReconnectTargetInput(cli.reconnectTarget);
       if (!parsedTarget.id && !parsedTarget.name) {
-        throw new Error('reconnect 目标无效。请传入 handle、taskId、taskName 或错误报告文件。');
+        throw new Error('Invalid reconnect target. Use a handle, taskId, taskName, or incident report file.');
       }
 
       runtimeState.taskIdentity.id = parsedTarget.id;
@@ -1383,13 +1681,40 @@ async function main() {
     const tasksBefore = cachedProbeTasks || await fetchActiveTasks(context);
     cachedProbeTasks = null;
     const beforeIds = new Set(tasksBefore.map((item) => normalizeTaskIdentity(item).id).filter(Boolean));
+    try {
+      runtimeState.nodeRecords = await fetchNodeRecords(context, SUBMIT_PROFILE.resGroupId);
+    } catch {
+      runtimeState.nodeRecords = [];
+    }
+
+    const boundImageSpec = await resolveBoundImageSpec(context, boundImage);
+    if (boundImageSpec.inferred) {
+      console.log(`Image type inferred for submit payload: image=${boundImageSpec.image} type=${boundImageSpec.imageType}`);
+    }
+
+    runtimeState.taskSubmitted = false;
+    runtimeState.taskFinalized = false;
+    runtimeState.taskIdentity = { id: '', name: '' };
+
+    try {
+      runtimeState.nodeRecords = await fetchNodeRecords(context, SUBMIT_PROFILE.resGroupId);
+    } catch {
+      // keep previous snapshot when live refresh fails
+    }
+
+    const selectedNode = chooseBestNode(runtimeState.nodeRecords, cpuCores, acceleratorCount);
+    if (!selectedNode) {
+      throw new Error('No ready and healthy node has enough free CPU, GPU, and root disk space for this request. Please try again later.');
+    }
 
     const payload = buildSubmitPayload({
-      boundImage,
+      boundImage: boundImageSpec.image,
+      imageType: boundImageSpec.imageType,
       taskName: String(settings.submitDefaults.taskName || '').trim() || toTimeName(),
       cpuCores,
       acceleratorCount,
       launcherPath: runtimeState.preparedSingleFile.launcherPath,
+      nodeName: selectedNode,
     });
 
     const issues = validateSubmitPayload(payload);
@@ -1398,6 +1723,7 @@ async function main() {
     }
 
     await checkResources(context, payload);
+
     const submittedAt = Date.now();
     const submitResponse = await submitTask(context, payload);
 
@@ -1408,17 +1734,24 @@ async function main() {
 
     await locateTaskIdentity(context, runtimeState.taskIdentity, beforeIds, submittedAt, taskLookupTimeoutMs, pollIntervalMs);
 
-    console.log('Submit success. Entering foreground log mode. Press Ctrl+C to stop and delete remote task.');
-    if (!runtimeState.taskIdentity.id) {
-      console.log('Warning: task ID not located yet, foreground tracking will continue by task name.');
-    }
     console.log(`Reconnect command: ${buildReconnectCommand(settings, runtimeState.taskIdentity)}`);
 
-    await monitorTaskForeground(context, runtimeState.taskIdentity, pollIntervalMs, runtimeState);
+    const outcome = await monitorTaskForeground(context, runtimeState.taskIdentity, pollIntervalMs, runtimeState);
+    const finalTaskSummary = outcome && outcome.finalTaskSummary ? outcome.finalTaskSummary : null;
+    const observedNode = extractObservedNode(finalTaskSummary) || selectedNode;
+    const statusReason = finalTaskSummary ? String(finalTaskSummary.statusReason || '').trim() : '';
+
+    if (outcome && outcome.success) {
+      process.exitCode = 0;
+    } else if (outcome && outcome.failed && observedNode && isNoSpaceImagePullFailure(statusReason)) {
+      process.exitCode = 1;
+      console.error(`ImagePulling failed node=${observedNode} reason=${statusReason}`);
+      console.error('The best eligible node still failed image pulling because of insufficient disk space. Please try again later.');
+    }
   } catch (error) {
     const reportPath = emitIncidentReport('runtime_error');
     if (reportPath) {
-      console.error(`Incident report generated: ${reportPath}`);
+      console.error(`Incident report written: ${reportPath}`);
       console.error(`Reconnect command: ${buildReconnectCommand(settings, runtimeState.taskIdentity)}`);
     }
     throw error;

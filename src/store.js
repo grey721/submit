@@ -2,7 +2,44 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const GLOBAL_DIR = path.join(os.homedir(), '.autosubmit');
+const DEFAULT_GLOBAL_DIR = path.join(os.homedir(), '.autosubmit');
+const GLOBAL_DIR_ENV = 'AUTOSUBMIT_HOME';
+const GLOBAL_DIR_POINTER = path.join(os.homedir(), '.autosubmit-home');
+
+function resolveGlobalDir() {
+  const fromEnv = String(process.env[GLOBAL_DIR_ENV] || '').trim();
+  if (fromEnv) return path.resolve(fromEnv);
+
+  try {
+    if (fs.existsSync(GLOBAL_DIR_POINTER)) {
+      const fromPointer = String(fs.readFileSync(GLOBAL_DIR_POINTER, 'utf-8') || '').trim();
+      if (fromPointer) return path.resolve(fromPointer);
+    }
+  } catch {
+    // ignore pointer read failures and fall back to default
+  }
+
+  return DEFAULT_GLOBAL_DIR;
+}
+
+function setGlobalDir(targetDir) {
+  const resolved = path.resolve(String(targetDir || '').trim());
+  if (!resolved) throw new Error('Global directory path is empty.');
+
+  if (resolved === DEFAULT_GLOBAL_DIR) {
+    try {
+      if (fs.existsSync(GLOBAL_DIR_POINTER)) fs.unlinkSync(GLOBAL_DIR_POINTER);
+    } catch {
+      // ignore pointer cleanup failures
+    }
+    return resolved;
+  }
+
+  fs.writeFileSync(GLOBAL_DIR_POINTER, `${resolved}\n`, 'utf-8');
+  return resolved;
+}
+
+const GLOBAL_DIR = resolveGlobalDir();
 
 const DEFAULT_CONFIG = {
   baseURL: '',
@@ -46,12 +83,13 @@ const DEFAULT_SETTINGS = {
 };
 
 function globalPath(fileName) {
-  return path.join(GLOBAL_DIR, fileName);
+  return path.join(resolveGlobalDir(), fileName);
 }
 
 function ensureGlobalDir() {
-  fs.mkdirSync(GLOBAL_DIR, { recursive: true });
-  return GLOBAL_DIR;
+  const dir = resolveGlobalDir();
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 function readJson(filePath, fallback = null) {
@@ -129,8 +167,8 @@ function loadConfig({ required = false } = {}) {
   if (!fs.existsSync(configPath)) {
     if (required) {
       throw new Error(
-        '未找到全局配置 ~/.autosubmit/config.json。\n' +
-        '请先运行 submit init 创建配置模板，然后填写 baseURL 和账号信息。',
+        `Global config not found: ${configPath}.\n` +
+        'Run submit init first, then fill in baseURL and account credentials.',
       );
     }
     return normalizeConfig({});
@@ -185,7 +223,10 @@ function parseCookieHeader(raw) {
 module.exports = {
   DEFAULT_CONFIG,
   DEFAULT_SETTINGS,
+  DEFAULT_GLOBAL_DIR,
   GLOBAL_DIR,
+  GLOBAL_DIR_ENV,
+  GLOBAL_DIR_POINTER,
   clearSessionCache,
   deepMerge,
   ensureGlobalDir,
@@ -197,5 +238,7 @@ module.exports = {
   normalizeSettings,
   parseCookieHeader,
   readJson,
+  resolveGlobalDir,
+  setGlobalDir,
   writeJson,
 };

@@ -5,9 +5,10 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const {
+  DEFAULT_CONFIG,
   DEFAULT_SETTINGS,
-  GLOBAL_DIR,
   clearSessionCache,
+  DEFAULT_GLOBAL_DIR,
   deepMerge,
   ensureGlobalDir,
   getSessionCachePath,
@@ -15,6 +16,8 @@ const {
   loadSettings,
   parseCookieHeader,
   readJson,
+  resolveGlobalDir,
+  setGlobalDir,
   writeJson,
 } = require('../src/store');
 
@@ -27,14 +30,14 @@ function readPackage() {
 
 function printHelp() {
   console.log([
-    'Submit CLI v2',
+    'Submit CLI v3',
     '',
-    'Global state is stored in ~/.autosubmit/.',
+    'Global state is stored in ~/.autosubmit/ by default.',
     'Launcher scripts are generated inside the current workdir by default:',
     '  ./.autosubmit/launchers/',
     '',
     'Usage:',
-    '  submit init',
+    '  submit init [--global-dir <path>]',
     '  submit login [--account <account>] [--password <password>]',
     '  submit logout',
     '  submit session import --token <token> [--cookie "k=v; k2=v2"] [--account <account>]',
@@ -57,6 +60,7 @@ function printHelp() {
     '',
     'Examples:',
     '  submit init',
+    '  submit init --global-dir /private/path/.autosubmit',
     '  submit login --account alice --password ******',
     '  submit images',
     '  submit set image 2',
@@ -95,46 +99,44 @@ function ensureCoreScript() {
   }
 }
 
-function copyTemplateFile(templateName, outputPath, { force = false } = {}) {
-  const templatePath = path.join(toolRoot, 'templates', templateName);
-  if (!fs.existsSync(templatePath)) {
-    throw new Error(`Template not found: ${templatePath}`);
-  }
-
-  if (fs.existsSync(outputPath) && !force) {
-    return { skipped: true, output: outputPath };
-  }
-
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  fs.copyFileSync(templatePath, outputPath);
-  return { skipped: false, output: outputPath };
-}
-
 function cmdInit(args) {
-  if (args.length) {
-    throw new Error('init does not accept arguments. Use: submit init');
+  const globalDirArg = String(parseOptionValue(args, '--global-dir') || '').trim();
+  const allowed = new Set(['--global-dir']);
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (!arg.startsWith('--')) throw new Error(`init does not accept positional arg: ${arg}`);
+    const key = arg.includes('=') ? arg.slice(0, arg.indexOf('=')) : arg;
+    if (!allowed.has(key)) throw new Error(`init unsupported arg: ${arg}`);
+    if (!arg.includes('=') && index + 1 < args.length) index += 1;
   }
 
-  ensureGlobalDir();
+  if (globalDirArg) {
+    setGlobalDir(globalDirArg);
+  }
+
+  const activeGlobalDir = ensureGlobalDir();
 
   const configPath = globalPath('config.json');
-  const configResult = copyTemplateFile('config.example.json', configPath);
+  const existingConfig = readJson(configPath, {});
+  const mergedConfig = deepMerge(DEFAULT_CONFIG, existingConfig || {});
+  writeJson(configPath, mergedConfig);
 
   const settingsPath = globalPath('settings.json');
-  const templateSettings = readJson(path.join(toolRoot, 'templates', 'settings.example.json'), DEFAULT_SETTINGS);
   const existingSettings = readJson(settingsPath, {});
-  const mergedSettings = deepMerge(templateSettings || DEFAULT_SETTINGS, existingSettings || {});
+  const mergedSettings = deepMerge(DEFAULT_SETTINGS, existingSettings || {});
   mergedSettings.commandName = 'submit';
   writeJson(settingsPath, mergedSettings);
 
   fs.mkdirSync(globalPath('reports'), { recursive: true });
 
-  console.log(configResult.skipped ? `Skipped existing file: ${configResult.output}` : `Created: ${configResult.output}`);
+  console.log(`Global dir: ${activeGlobalDir}`);
+  console.log(`Written: ${configPath}`);
   console.log(`Written: ${settingsPath}`);
   console.log(`Session cache: ${getSessionCachePath()}`);
   console.log('');
   console.log('Next steps:');
-  console.log('  1. Edit ~/.autosubmit/config.json');
+  console.log(`  1. Edit ${globalPath('config.json')}`);
   console.log('  2. submit login --account <account> --password <password>');
   console.log('  3. submit set image <image>');
   console.log('  4. cd <your_project> && submit train.py');
@@ -172,13 +174,13 @@ function cmdLogin(rawArgs) {
 
   writeJson(configPath, config);
 
-  console.log('Credentials updated in ~/.autosubmit/config.json.');
+  console.log(`Credentials updated in ${globalPath('config.json')}.`);
   if (clearSessionCache()) {
     console.log('Session cache cleared.');
   }
 
   process.on('SIGINT', () => {});
-  const coreArgs = ['--check-login', '--interactive-captcha'];
+  const coreArgs = ['--check-login'];
 
   const child = spawnCore(coreArgs);
   if (child.error) throw new Error(`执行失败: ${child.error.message}`);
@@ -231,7 +233,7 @@ function cmdSession(rawArgs) {
 
   const configPath = globalPath('config.json');
   if (!fs.existsSync(configPath)) {
-    throw new Error('Missing ~/.autosubmit/config.json. Run `submit init` first.');
+    throw new Error(`Missing ${globalPath('config.json')}. Run \`submit init\` first.`);
   }
 
   const config = readJson(configPath, {}) || {};
@@ -477,7 +479,8 @@ function main() {
     const pkg = readPackage();
     console.log(`submit ${pkg.version || '0.0.0'}`);
     console.log(`bin: ${process.argv[1]}`);
-    console.log(`global-dir: ${GLOBAL_DIR}`);
+    console.log(`global-dir: ${resolveGlobalDir()}`);
+    console.log(`default-global-dir: ${DEFAULT_GLOBAL_DIR}`);
     return;
   }
 
