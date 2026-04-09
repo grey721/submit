@@ -51,6 +51,8 @@ const SUBMIT_PROFILE = {
   emergencyFlag: false,
 };
 
+const TRAINING_GROUP_NAME = 'training';
+
 function safeJsonParse(value, fallback = null) {
   if (typeof value !== 'string') return fallback;
   try {
@@ -551,6 +553,7 @@ function nodeHasCapacity(nodeInfo, requiredCpu, requiredGpu) {
 
 function isEligibleNode(nodeInfo, requiredCpu, requiredGpu) {
   if (!nodeInfo) return false;
+  if (String(nodeInfo.groupName || '').trim() && String(nodeInfo.groupName || '').toLowerCase() !== TRAINING_GROUP_NAME) return false;
   if (String(nodeInfo.nodeStatus || '').toLowerCase() !== 'ready') return false;
   if (String(nodeInfo.nodeResourceStatus || '').toLowerCase() !== 'healthy') return false;
   if (!nodeHasCapacity(nodeInfo, requiredCpu, requiredGpu)) return false;
@@ -1332,11 +1335,11 @@ async function monitorTaskForeground(context, taskIdentity, pollIntervalMs, runt
         if (String(taskSummary.status || '').toLowerCase() === 'imagepulling') {
           const observedNode = extractObservedNode(taskSummary);
           const nodeInfo = findNodeInfo(runtimeState.nodeRecords || [], observedNode);
-          console.log([
-            'ImagePulling',
+          const details = [
             `Node: ${observedNode || '-'}`,
             nodeInfo ? formatNodeInfoBrief(nodeInfo) : '',
-          ].filter(Boolean).join(', '));
+          ].filter(Boolean).join(', ');
+          console.log(`ImagePulling -> ${details}`);
           pullingPrinted = true;
         }
       }

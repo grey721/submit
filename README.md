@@ -188,7 +188,7 @@ submit clear-logs
 
 ```text
 Reconnect command: ...
-ImagePulling, Node: gpu09, CPU: 37/56, GPU: 4/6, RootAvail: 166.7G (19%)
+ImagePulling -> Node: gpu09, CPU: 37/56, GPU: 4/6, RootAvail: 166.7G (19%)
 Submit succeeded
 Task completed: status=Succeeded
 ```
