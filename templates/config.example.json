@@ -1,0 +1,10 @@
+{
+  "baseURL": "https://10.10.24.107:32206",
+  "ignoreHTTPSErrors": true,
+  "timeoutMs": 15000,
+  "credentials": {
+    "account": "",
+    "password": "",
+    "captcha": ""
+  }
+}
