@@ -60,6 +60,7 @@ const DEFAULT_SETTINGS = {
   singleFile: {
     launcherDir: '.autosubmit/launchers',
     keepLauncher: false,
+    condaEnv: '',
     scriptArgs: [],
     interpreters: {
       '.py': 'python',
@@ -141,6 +142,7 @@ function normalizeSettings(rawSettings) {
   settings.singleFile = settings.singleFile || {};
   settings.singleFile.launcherDir = String(settings.singleFile.launcherDir || '.autosubmit/launchers').trim() || '.autosubmit/launchers';
   settings.singleFile.keepLauncher = Boolean(settings.singleFile.keepLauncher);
+  settings.singleFile.condaEnv = String(settings.singleFile.condaEnv || '').trim();
   settings.singleFile.scriptArgs = Array.isArray(settings.singleFile.scriptArgs)
     ? settings.singleFile.scriptArgs.map((item) => String(item))
     : [];

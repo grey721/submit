@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
 const readline = require('node:readline');
+const crypto = require('node:crypto');
 const axios = require('axios');
 const { sm2 } = require('sm-crypto');
 
@@ -72,8 +73,43 @@ function toTimeName(timestamp = Date.now()) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+function toUniqueName(timestamp = Date.now()) {
+  const randomHex = crypto.randomBytes(3).toString('hex');
+  return `${toTimeName(timestamp)}-${process.pid}-${randomHex}`;
+}
+
+function toPidHashName() {
+  return `t${process.pid}${crypto.randomBytes(3).toString('hex')}`;
+}
+
 function shellQuote(input) {
   return `'${String(input).replace(/'/g, `'"'"'`)}'`;
+}
+
+function buildCondaActivationLines(condaEnv) {
+  const envName = String(condaEnv || '').trim();
+  if (!envName) return [];
+
+  return [
+    `CONDA_ENV_NAME=${shellQuote(envName)}`,
+    'if command -v conda >/dev/null 2>&1; then',
+    '  eval "$(conda shell.bash hook)"',
+    'elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then',
+    '  . "$HOME/miniconda3/etc/profile.d/conda.sh"',
+    'elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then',
+    '  . "$HOME/anaconda3/etc/profile.d/conda.sh"',
+    'elif [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then',
+    '  . "$HOME/miniforge3/etc/profile.d/conda.sh"',
+    'elif [ -f "$HOME/mambaforge/etc/profile.d/conda.sh" ]; then',
+    '  . "$HOME/mambaforge/etc/profile.d/conda.sh"',
+    'elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then',
+    '  . "/opt/conda/etc/profile.d/conda.sh"',
+    'else',
+    '  echo "conda is not available; cannot activate ${CONDA_ENV_NAME}" >&2',
+    '  exit 1',
+    'fi',
+    'conda activate "$CONDA_ENV_NAME"',
+  ];
 }
 
 function parseCliArgs(argv) {
@@ -81,6 +117,7 @@ function parseCliArgs(argv) {
     singleFile: '',
     reconnectTarget: '',
     listImages: false,
+    listNodes: false,
     resolveImageSelector: '',
     fetchCaptcha: false,
     captchaOutput: '',
@@ -102,6 +139,7 @@ function parseCliArgs(argv) {
     if (arg.startsWith('--reconnect=')) { out.reconnectTarget = arg.slice('--reconnect='.length); continue; }
 
     if (arg === '--list-images') { out.listImages = true; continue; }
+    if (arg === '--list-nodes') { out.listNodes = true; continue; }
 
     if (arg === '--resolve-image') { out.resolveImageSelector = argv[index + 1] || ''; index += 1; continue; }
     if (arg.startsWith('--resolve-image=')) { out.resolveImageSelector = arg.slice('--resolve-image='.length); continue; }
@@ -466,7 +504,7 @@ function writeIncidentReport(settings, taskIdentity, reason) {
   fs.mkdirSync(reportDir, { recursive: true });
 
   const safeReason = String(reason || 'unexpected').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-  const reportPath = path.join(reportDir, `incident-${toTimeName()}-${safeReason}.json`);
+  const reportPath = path.join(reportDir, `incident-${toPidHashName()}-${safeReason}.json`);
 
   const payload = {
     version: 1,
@@ -551,6 +589,14 @@ function nodeHasCapacity(nodeInfo, requiredCpu, requiredGpu) {
   return freeCpu >= requiredCpu && freeGpu >= requiredGpu;
 }
 
+function nodeFreeCpu(nodeInfo) {
+  return safeNumber(nodeInfo && nodeInfo.cpuTotal) - safeNumber(nodeInfo && nodeInfo.cpuUsed);
+}
+
+function nodeFreeGpu(nodeInfo) {
+  return safeNumber(nodeInfo && nodeInfo.gpuTotal) - safeNumber(nodeInfo && nodeInfo.gpuUsed);
+}
+
 function isEligibleNode(nodeInfo, requiredCpu, requiredGpu) {
   if (!nodeInfo) return false;
   if (String(nodeInfo.groupName || '').trim() && String(nodeInfo.groupName || '').toLowerCase() !== TRAINING_GROUP_NAME) return false;
@@ -591,6 +637,58 @@ function formatNodeInfoBrief(nodeInfo) {
   ].filter(Boolean).join(', ');
 }
 
+function padCell(value, width) {
+  const text = String(value === undefined || value === null ? '' : value);
+  if (text.length >= width) return text;
+  return `${text}${' '.repeat(width - text.length)}`;
+}
+
+function formatNodeTable(nodeRecords, requiredCpu, requiredGpu) {
+  const selectedNode = chooseBestNode(nodeRecords, requiredCpu, requiredGpu);
+  const ranked = sortEligibleNodeRecords(nodeRecords);
+  const rows = ranked.map((nodeInfo) => {
+    const eligible = isEligibleNode(nodeInfo, requiredCpu, requiredGpu);
+    const selected = selectedNode && nodeInfo.nodeName === selectedNode;
+    return {
+      selected: selected ? '*' : '',
+      eligible: eligible ? 'yes' : 'no',
+      node: nodeInfo.nodeName || '-',
+      group: nodeInfo.groupName || '-',
+      status: nodeInfo.nodeStatus || '-',
+      resource: nodeInfo.nodeResourceStatus || '-',
+      cpu: `${nodeInfo.cpuUsed}/${nodeInfo.cpuTotal}`,
+      cpuFree: nodeFreeCpu(nodeInfo),
+      gpu: `${nodeInfo.gpuUsed}/${nodeInfo.gpuTotal}`,
+      gpuFree: nodeFreeGpu(nodeInfo),
+      rootAvail: Number.isFinite(nodeInfo.rootAvailable) ? formatGiBFromKiB(nodeInfo.rootAvailable) : '-',
+      rootUsed: Number.isFinite(nodeInfo.rootUsagePercent) ? `${nodeInfo.rootUsagePercent}%` : (nodeInfo.rootUsage || '-'),
+    };
+  });
+
+  const columns = [
+    ['SEL', 'selected'],
+    ['ELIGIBLE', 'eligible'],
+    ['NODE', 'node'],
+    ['GROUP', 'group'],
+    ['STATUS', 'status'],
+    ['RESOURCE', 'resource'],
+    ['CPU USED/TOTAL', 'cpu'],
+    ['CPU FREE', 'cpuFree'],
+    ['GPU USED/TOTAL', 'gpu'],
+    ['GPU FREE', 'gpuFree'],
+    ['ROOT AVAIL', 'rootAvail'],
+    ['ROOT USED', 'rootUsed'],
+  ];
+  const widths = columns.map(([header, key]) => Math.max(
+    header.length,
+    ...rows.map((row) => String(row[key] === undefined || row[key] === null ? '' : row[key]).length),
+  ));
+  const header = columns.map(([name], index) => padCell(name, widths[index])).join('  ');
+  const separator = widths.map((width) => '-'.repeat(width)).join('  ');
+  const body = rows.map((row) => columns.map(([, key], index) => padCell(row[key], widths[index])).join('  '));
+  return [header, separator, ...body].join('\n');
+}
+
 function resolveRuntimeWorkDir() {
   return process.cwd();
 }
@@ -627,7 +725,7 @@ function prepareSingleFileLauncher(singleFile, runtimeWorkDir, settings, cliScri
     : [];
   const scriptArgs = [...configuredScriptArgs, ...passthroughArgs];
 
-  const launcherName = `${path.basename(absoluteFile).replace(/[^a-zA-Z0-9._-]/g, '_')}.${toTimeName()}.submit.sh`;
+  const launcherName = `${path.basename(absoluteFile).replace(/[^a-zA-Z0-9._-]/g, '_')}.${toUniqueName()}.submit.sh`;
   const launcherPath = path.join(launcherDir, launcherName);
   const scriptLine = `${interpreter} ${shellQuote(absoluteFile)}${scriptArgs.length ? ` ${scriptArgs.map((item) => shellQuote(item)).join(' ')}` : ''}`;
 
@@ -635,6 +733,7 @@ function prepareSingleFileLauncher(singleFile, runtimeWorkDir, settings, cliScri
     '#!/usr/bin/env bash',
     'set -euo pipefail',
     `cd ${shellQuote(runtimeWorkDir)}`,
+    ...buildCondaActivationLines(settings.singleFile.condaEnv),
     scriptLine,
     '',
   ].join('\n');
@@ -1131,30 +1230,38 @@ async function submitTask(context, payload) {
 async function fetchTaskSummary(context, taskIdentity) {
   if (!taskIdentity || (!taskIdentity.id && !taskIdentity.name)) return null;
 
+  let activeSummary = null;
   try {
     const activeTasks = await fetchTasksByStatusFlag(context, 0);
     const activeMatch = activeTasks.find((item) =>
       (taskIdentity.id && String(item.id || item.jobId || item.taskId || '').trim() === taskIdentity.id) ||
       (taskIdentity.name && String(item.name || item.taskName || '').trim() === taskIdentity.name),
     );
-    if (activeMatch) return summarizeTaskRecord(activeMatch, 'active');
+    if (activeMatch) activeSummary = summarizeTaskRecord(activeMatch, 'active');
   } catch {
     // ignore transient active-list failures during foreground polling
   }
 
-  if (!taskIdentity.id) return null;
+  if (!taskIdentity.id) return activeSummary;
 
+  let historySummary = null;
   try {
     const historyTasks = await fetchTasksByStatusFlag(context, 3, { id: taskIdentity.id });
     const historyMatch = historyTasks.find((item) =>
       String(item.id || item.jobId || item.taskId || '').trim() === taskIdentity.id,
     );
-    if (historyMatch) return summarizeTaskRecord(historyMatch, 'history');
+    if (historyMatch) historySummary = summarizeTaskRecord(historyMatch, 'history');
   } catch {
     // ignore transient history-list failures during foreground polling
   }
 
-  return null;
+  if (historySummary && (isSuccessTerminalStatus(historySummary.status) || isFailedTerminalStatus(historySummary.status))) {
+    return historySummary;
+  }
+  if (activeSummary && (isSuccessTerminalStatus(activeSummary.status) || isFailedTerminalStatus(activeSummary.status))) {
+    return activeSummary;
+  }
+  return historySummary || activeSummary || null;
 }
 
 async function deleteTask(context, taskId) {
@@ -1350,7 +1457,17 @@ async function monitorTaskForeground(context, taskIdentity, pollIntervalMs, runt
 
       const finalResult = await fetchStatusAndLogs(context, taskIdentity.id, logState);
       if (finalResult.logDelta) process.stdout.write(finalResult.logDelta);
-      const finalTaskSummary = await fetchTaskSummary(context, taskIdentity);
+      let finalTaskSummary = await fetchTaskSummary(context, taskIdentity);
+      if (!isSuccessTerminalStatus(finalTaskSummary && finalTaskSummary.status) && !isFailedTerminalStatus(finalTaskSummary && finalTaskSummary.status)) {
+        const settleDeadline = Date.now() + Math.max(60000, pollIntervalMs * 30);
+        while (Date.now() < settleDeadline) {
+          await waitShort(pollIntervalMs);
+          finalTaskSummary = await fetchTaskSummary(context, taskIdentity);
+          if (isSuccessTerminalStatus(finalTaskSummary && finalTaskSummary.status) || isFailedTerminalStatus(finalTaskSummary && finalTaskSummary.status)) {
+            break;
+          }
+        }
+      }
 
       runtimeState.taskFinalized = true;
       const resolvedStatus = finalTaskSummary && finalTaskSummary.status
@@ -1589,6 +1706,25 @@ async function main() {
       return;
     }
 
+    if (cli.listNodes) {
+      await ensureAuthenticated();
+      const nodeRecords = await fetchNodeRecords(context, SUBMIT_PROFILE.resGroupId);
+      const selectedNode = chooseBestNode(nodeRecords, cpuCores, acceleratorCount);
+
+      console.log(`Requested resources: CPU=${cpuCores} GPU=${acceleratorCount}`);
+      console.log('Eligibility: group=training, status=ready, resource=healthy, enough free CPU/GPU, root disk available > 0.');
+      console.log('Selection policy: filter eligible nodes, then rank by root disk available desc, root usage percent asc, GPU used asc, CPU used asc, node name asc.');
+      console.log(`Selected node: ${selectedNode || '-'}`);
+      console.log('');
+
+      if (!nodeRecords.length) {
+        console.log('No nodes found.');
+      } else {
+        console.log(formatNodeTable(nodeRecords, cpuCores, acceleratorCount));
+      }
+      return;
+    }
+
     if (cli.resolveImageSelector) {
       await ensureAuthenticated();
       const result = await fetchImageOptions(context);
@@ -1713,7 +1849,7 @@ async function main() {
     const payload = buildSubmitPayload({
       boundImage: boundImageSpec.image,
       imageType: boundImageSpec.imageType,
-      taskName: String(settings.submitDefaults.taskName || '').trim() || toTimeName(),
+      taskName: String(settings.submitDefaults.taskName || '').trim() || toPidHashName(),
       cpuCores,
       acceleratorCount,
       launcherPath: runtimeState.preparedSingleFile.launcherPath,

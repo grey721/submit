@@ -107,6 +107,7 @@ submit images
 submit set image 1
 submit set accelerator 1
 submit set cpu 4
+submit set conda-env pytorch
 
 cd ~/your-project
 submit train.py --epochs 20
@@ -134,6 +135,8 @@ submit set task-name <name>
 submit set clear-task-name
 submit set poll-interval <seconds>
 submit set keep-launcher <0|1>
+submit set conda-env [env]
+submit set clear-conda-env
 submit set script-args <args...>
 submit set clear-script-args
 submit get <key|all>
@@ -152,7 +155,7 @@ submit clear-logs
 `submit train.py --epochs 20` 的执行过程：
 
 1. 在当前目录生成 `./.autosubmit/launchers/<file>.<timestamp>.submit.sh`
-2. 启动脚本内容固定为 `cd <cwd> && <interpreter> <abs_file> <args>`
+2. 启动脚本会先 `cd <cwd>`，如果配置了 `conda-env` 则先初始化 conda 并 `conda activate <env>`，再执行 `<interpreter> <abs_file> <args>`
 3. 用硬编码字段直接构造 `POST /api/iresource/v1/train`
 4. 提交前先调用 `/api/iresource/v1/train/check-resources`
 5. 提交成功后前台轮询 `/api/iresource/v1/train/{id}/read-log`

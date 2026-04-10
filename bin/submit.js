@@ -49,10 +49,13 @@ function printHelp() {
     '  submit set clear-task-name',
     '  submit set poll-interval <seconds>',
     '  submit set keep-launcher <0|1>',
+    '  submit set conda-env [env]',
+    '  submit set clear-conda-env',
     '  submit set script-args <args...>',
     '  submit set clear-script-args',
     '  submit get <key|all>',
     '  submit images',
+    '  submit nodes',
     '  submit captcha fetch [--output <filePath>]',
     '  submit clear-logs',
     '  submit reconnect <handle|taskId|taskName|report.json>',
@@ -63,9 +66,11 @@ function printHelp() {
     '  submit init --global-dir /private/path/.autosubmit',
     '  submit login --account alice --password ******',
     '  submit images',
+    '  submit nodes',
     '  submit set image 2',
     '  submit set accelerator 1',
     '  submit set cpu 8',
+    '  submit set conda-env pytorch',
     '  submit set script-args --config configs/base.yaml',
     '  submit train.py --epochs 20',
     '  submit reconnect tid_123456',
@@ -269,6 +274,7 @@ function buildSettingsSnapshot(settings) {
     'task-name': String(settings.submitDefaults.taskName || ''),
     'poll-interval': Number(settings.foreground.pollIntervalSec),
     'keep-launcher': settings.singleFile.keepLauncher ? 1 : 0,
+    'conda-env': String(settings.singleFile.condaEnv || ''),
     'script-args': Array.isArray(settings.singleFile.scriptArgs) ? settings.singleFile.scriptArgs : [],
     'launcher-dir': String(settings.singleFile.launcherDir || ''),
   };
@@ -392,6 +398,27 @@ function cmdSet(rawArgs) {
     return;
   }
 
+  if (key === 'conda-env') {
+    if (!value) {
+      settings.singleFile.condaEnv = '';
+      writeJson(settingsPath, settings);
+      console.log('Conda env cleared.');
+      return;
+    }
+
+    settings.singleFile.condaEnv = value;
+    writeJson(settingsPath, settings);
+    console.log(`Conda env set: ${value}`);
+    return;
+  }
+
+  if (key === 'clear-conda-env') {
+    settings.singleFile.condaEnv = '';
+    writeJson(settingsPath, settings);
+    console.log('Conda env cleared.');
+    return;
+  }
+
   if (key === 'script-args') {
     settings.singleFile.scriptArgs = valueArgs.map((item) => String(item));
     writeJson(settingsPath, settings);
@@ -437,6 +464,13 @@ function cmdReconnect(args) {
 function cmdImages() {
   ensureCoreScript();
   const child = spawnCore(['--list-images']);
+  if (child.error) throw new Error(`执行失败: ${child.error.message}`);
+  process.exit(child.status === null ? 1 : child.status);
+}
+
+function cmdNodes() {
+  ensureCoreScript();
+  const child = spawnCore(['--list-nodes']);
   if (child.error) throw new Error(`执行失败: ${child.error.message}`);
   process.exit(child.status === null ? 1 : child.status);
 }
@@ -491,6 +525,7 @@ function main() {
   if (head === 'set') { cmdSet(argv.slice(1)); return; }
   if (head === 'get') { cmdGet(argv.slice(1)); return; }
   if (head === 'images') { cmdImages(); return; }
+  if (head === 'nodes') { cmdNodes(); return; }
   if (head === 'captcha' && argv[1] === 'fetch') { cmdCaptchaFetch(argv.slice(2)); return; }
   if (head === 'clear-logs') { cmdClearLogs(); return; }
   if (head === 'logs' && argv[1] === 'clear') { cmdClearLogs(); return; }
