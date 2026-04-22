@@ -14,6 +14,7 @@ const {
   getSessionCachePath,
   globalPath,
   loadSettings,
+  normalizeSettings,
   parseCookieHeader,
   readJson,
   resolveGlobalDir,
@@ -33,8 +34,8 @@ function printHelp() {
     'Submit CLI v3',
     '',
     'Global state is stored in ~/.autosubmit/ by default.',
-    'Launcher scripts are generated inside the current workdir by default:',
-    '  ./.autosubmit/launchers/',
+    'Launcher scripts are generated inside the global state dir by default:',
+    '  ~/.autosubmit/launchers/',
     '',
     'Usage:',
     '  submit init [--global-dir <path>]',
@@ -129,11 +130,12 @@ function cmdInit(args) {
 
   const settingsPath = globalPath('settings.json');
   const existingSettings = readJson(settingsPath, {});
-  const mergedSettings = deepMerge(DEFAULT_SETTINGS, existingSettings || {});
+  const mergedSettings = normalizeSettings(deepMerge(DEFAULT_SETTINGS, existingSettings || {}));
   mergedSettings.commandName = 'submit';
   writeJson(settingsPath, mergedSettings);
 
   fs.mkdirSync(globalPath('reports'), { recursive: true });
+  fs.mkdirSync(globalPath('launchers'), { recursive: true });
 
   console.log(`Global dir: ${activeGlobalDir}`);
   console.log(`Written: ${configPath}`);

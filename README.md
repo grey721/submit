@@ -8,7 +8,7 @@
 
 - 全局配置默认放在 `~/.autosubmit/`
 - 支持 `submit init --global-dir <path>` 把全局状态迁到自定义目录
-- 启动脚本默认生成在当前项目目录下 `./.autosubmit/launchers/`
+- 启动脚本默认生成在全局状态目录下 `~/.autosubmit/launchers/`
 - 提交前自动做 `/api/iresource/v1/train/check-resources`
 - 提交后前台轮询 `/read-log`，终端实时显示日志
 - 镜像拉取阶段会打印节点信息
@@ -26,13 +26,8 @@
 ├── config.json
 ├── settings.json
 ├── session.json
-└── reports/
-```
-
-项目内临时脚本：
-
-```text
-<your-project>/.autosubmit/launchers/
+├── reports/
+└── launchers/
 ```
 
 ## 安装
@@ -154,7 +149,7 @@ submit clear-logs
 
 `submit train.py --epochs 20` 的执行过程：
 
-1. 在当前目录生成 `./.autosubmit/launchers/<file>.<timestamp>.submit.sh`
+1. 在全局状态目录生成 `launchers/<file>.<timestamp>.submit.sh`
 2. 启动脚本会先 `cd <cwd>`，如果配置了 `conda-env` 则先初始化 conda 并 `conda activate <env>`，再执行 `<interpreter> <abs_file> <args>`
 3. 用硬编码字段直接构造 `POST /api/iresource/v1/train`
 4. 提交前先调用 `/api/iresource/v1/train/check-resources`
@@ -198,7 +193,9 @@ Task completed: status=Succeeded
 
 ## Launcher 说明
 
-默认 launcher 放在当前项目里而不是 `~/.autosubmit/`，原因是远端训练容器必须能看到这个脚本路径。
+默认 launcher 放在全局状态目录的 `launchers/` 下。脚本内部会先 `cd` 回提交命令执行时的项目目录，再运行目标文件。
+
+注意：训练容器必须能访问这个全局 launcher 路径；如果平台只挂载项目目录而不挂载全局目录，任务会在执行 `bash <launcher>` 前失败。这种情况下需要把 `settings.json` 里的 `singleFile.launcherDir` 改回容器可见的路径。
 
 如果要保留生成的脚本：
 

@@ -5,6 +5,7 @@ const path = require('node:path');
 const DEFAULT_GLOBAL_DIR = path.join(os.homedir(), '.autosubmit');
 const GLOBAL_DIR_ENV = 'AUTOSUBMIT_HOME';
 const GLOBAL_DIR_POINTER = path.join(os.homedir(), '.autosubmit-home');
+const LEGACY_PROJECT_LAUNCHER_DIR = '.autosubmit/launchers';
 
 function resolveGlobalDir() {
   const fromEnv = String(process.env[GLOBAL_DIR_ENV] || '').trim();
@@ -58,7 +59,7 @@ const DEFAULT_SETTINGS = {
     image: '',
   },
   singleFile: {
-    launcherDir: '.autosubmit/launchers',
+    launcherDir: '',
     keepLauncher: false,
     condaEnv: '',
     scriptArgs: [],
@@ -85,6 +86,10 @@ const DEFAULT_SETTINGS = {
 
 function globalPath(fileName) {
   return path.join(resolveGlobalDir(), fileName);
+}
+
+function defaultLauncherDir() {
+  return globalPath('launchers');
 }
 
 function ensureGlobalDir() {
@@ -140,7 +145,10 @@ function normalizeSettings(rawSettings) {
   settings.project.image = String(settings.project.image || '').trim();
 
   settings.singleFile = settings.singleFile || {};
-  settings.singleFile.launcherDir = String(settings.singleFile.launcherDir || '.autosubmit/launchers').trim() || '.autosubmit/launchers';
+  const launcherDir = String(settings.singleFile.launcherDir || '').trim();
+  settings.singleFile.launcherDir = (!launcherDir || launcherDir === LEGACY_PROJECT_LAUNCHER_DIR)
+    ? defaultLauncherDir()
+    : launcherDir;
   settings.singleFile.keepLauncher = Boolean(settings.singleFile.keepLauncher);
   settings.singleFile.condaEnv = String(settings.singleFile.condaEnv || '').trim();
   settings.singleFile.scriptArgs = Array.isArray(settings.singleFile.scriptArgs)
@@ -229,7 +237,9 @@ module.exports = {
   GLOBAL_DIR,
   GLOBAL_DIR_ENV,
   GLOBAL_DIR_POINTER,
+  LEGACY_PROJECT_LAUNCHER_DIR,
   clearSessionCache,
+  defaultLauncherDir,
   deepMerge,
   ensureGlobalDir,
   getSessionCachePath,

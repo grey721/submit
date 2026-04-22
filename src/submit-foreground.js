@@ -10,6 +10,7 @@ const {
   GLOBAL_DIR,
   clearSessionCache,
   getSessionCachePath,
+  globalPath,
   loadConfig,
   loadSettings,
 } = require('./store');
@@ -92,23 +93,32 @@ function buildCondaActivationLines(condaEnv) {
 
   return [
     `CONDA_ENV_NAME=${shellQuote(envName)}`,
-    'if command -v conda >/dev/null 2>&1; then',
-    '  eval "$(conda shell.bash hook)"',
+    '__AUTOSUBMIT_CONDA_SH=""',
+    'if [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then',
+    '  __AUTOSUBMIT_CONDA_SH="/opt/conda/etc/profile.d/conda.sh"',
+    '  . "$__AUTOSUBMIT_CONDA_SH"',
     'elif [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then',
-    '  . "$HOME/miniconda3/etc/profile.d/conda.sh"',
+    '  __AUTOSUBMIT_CONDA_SH="$HOME/miniconda3/etc/profile.d/conda.sh"',
+    '  . "$__AUTOSUBMIT_CONDA_SH"',
     'elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then',
-    '  . "$HOME/anaconda3/etc/profile.d/conda.sh"',
+    '  __AUTOSUBMIT_CONDA_SH="$HOME/anaconda3/etc/profile.d/conda.sh"',
+    '  . "$__AUTOSUBMIT_CONDA_SH"',
     'elif [ -f "$HOME/miniforge3/etc/profile.d/conda.sh" ]; then',
-    '  . "$HOME/miniforge3/etc/profile.d/conda.sh"',
+    '  __AUTOSUBMIT_CONDA_SH="$HOME/miniforge3/etc/profile.d/conda.sh"',
+    '  . "$__AUTOSUBMIT_CONDA_SH"',
     'elif [ -f "$HOME/mambaforge/etc/profile.d/conda.sh" ]; then',
-    '  . "$HOME/mambaforge/etc/profile.d/conda.sh"',
-    'elif [ -f "/opt/conda/etc/profile.d/conda.sh" ]; then',
-    '  . "/opt/conda/etc/profile.d/conda.sh"',
+    '  __AUTOSUBMIT_CONDA_SH="$HOME/mambaforge/etc/profile.d/conda.sh"',
+    '  . "$__AUTOSUBMIT_CONDA_SH"',
+    'elif command -v conda >/dev/null 2>&1; then',
+    '  eval "$(conda shell.bash hook)"',
     'else',
     '  echo "conda is not available; cannot activate ${CONDA_ENV_NAME}" >&2',
     '  exit 1',
     'fi',
     'conda activate "$CONDA_ENV_NAME"',
+    'if [ -n "$__AUTOSUBMIT_CONDA_SH" ]; then',
+    '  export BASH_ENV="$__AUTOSUBMIT_CONDA_SH"',
+    'fi',
   ];
 }
 
@@ -714,7 +724,10 @@ function prepareSingleFileLauncher(singleFile, runtimeWorkDir, settings, cliScri
     throw new Error(`No interpreter configured for file extension ${ext || '(empty)'}. Check settings.singleFile.interpreters.`);
   }
 
-  const launcherDir = path.resolve(runtimeWorkDir, String(settings.singleFile.launcherDir || '.autosubmit/launchers'));
+  const launcherDirSetting = String(settings.singleFile.launcherDir || globalPath('launchers')).trim() || globalPath('launchers');
+  const launcherDir = path.isAbsolute(launcherDirSetting)
+    ? launcherDirSetting
+    : path.resolve(runtimeWorkDir, launcherDirSetting);
   fs.mkdirSync(launcherDir, { recursive: true });
 
   const configuredScriptArgs = Array.isArray(settings.singleFile.scriptArgs)
@@ -725,8 +738,6 @@ function prepareSingleFileLauncher(singleFile, runtimeWorkDir, settings, cliScri
     : [];
   const scriptArgs = [...configuredScriptArgs, ...passthroughArgs];
 
-  const launcherName = `${path.basename(absoluteFile).replace(/[^a-zA-Z0-9._-]/g, '_')}.${toUniqueName()}.submit.sh`;
-  const launcherPath = path.join(launcherDir, launcherName);
   const scriptLine = `${interpreter} ${shellQuote(absoluteFile)}${scriptArgs.length ? ` ${scriptArgs.map((item) => shellQuote(item)).join(' ')}` : ''}`;
 
   const launcherContent = [
@@ -738,7 +749,32 @@ function prepareSingleFileLauncher(singleFile, runtimeWorkDir, settings, cliScri
     '',
   ].join('\n');
 
-  fs.writeFileSync(launcherPath, launcherContent, 'utf-8');
+  const launcherBaseName = path.basename(absoluteFile).replace(/[^a-zA-Z0-9._-]/g, '_');
+  let launcherPath = '';
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const launcherName = `${launcherBaseName}.${toUniqueName()}.submit.sh`;
+    const candidatePath = path.join(launcherDir, launcherName);
+    if (fs.existsSync(candidatePath)) continue;
+
+    try {
+      const fd = fs.openSync(candidatePath, 'wx', 0o755);
+      try {
+        fs.writeFileSync(fd, launcherContent, 'utf-8');
+      } finally {
+        fs.closeSync(fd);
+      }
+      launcherPath = candidatePath;
+      break;
+    } catch (error) {
+      if (error && error.code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+
+  if (!launcherPath) {
+    throw new Error(`Could not create a unique launcher in ${launcherDir}.`);
+  }
+
   fs.chmodSync(launcherPath, 0o755);
 
   return {
@@ -1811,6 +1847,7 @@ async function main() {
     if (!cli.singleFile) throw new Error('Missing script file. Use: submit <file> ...');
 
     runtimeState.preparedSingleFile = prepareSingleFileLauncher(cli.singleFile, runtimeWorkDir, settings, cli.scriptArgs);
+    console.log(`Submitting file: ${runtimeState.preparedSingleFile.absoluteFile}`);
     if (runtimeState.preparedSingleFile.scriptArgs.length) {
       console.log(`Script args: ${JSON.stringify(runtimeState.preparedSingleFile.scriptArgs)}`);
     }
